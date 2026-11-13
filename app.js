@@ -104,8 +104,13 @@ async function api(path, method = "GET", body) {
   });
   if (res.status === 204) return null;
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new Error(data?.error?.message || res.statusText);
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* Spotify antwortet bei manchen Fehlern mit reinem Text */ }
+  if (!res.ok) {
+    const err = new Error(data?.error?.message || text || res.statusText);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -124,6 +129,17 @@ async function loadTracks(source) {
   };
   const keys = source === "mix" ? Object.keys(fetchers) : [source];
   const results = await Promise.allSettled(keys.map((k) => fetchers[k]()));
+
+  // Alle Anfragen fehlgeschlagen → echten Grund anzeigen statt "zu wenige Songs"
+  const failed = results.filter((r) => r.status === "rejected");
+  if (failed.length === results.length) {
+    const err = failed[0].reason;
+    if (err.status === 403) {
+      throw new Error("Spotify verweigert den Zugriff auf deine Songs. Dein Spotify-Konto muss vom Ersteller des Spiels " +
+        "im Spotify-Dashboard unter „User Management“ eingetragen werden (mit der E-Mail-Adresse deines Spotify-Kontos).");
+    }
+    throw new Error("Songs konnten nicht geladen werden: " + err.message);
+  }
 
   const byId = new Map();
   for (const r of results) {
