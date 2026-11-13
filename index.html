@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Snippet – Errate deine Songs</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <h1>Snippet<span class="dot">.</span></h1>
+      <div id="userBox" class="user hidden">
+        <span id="userName"></span>
+        <button id="logoutBtn" class="link">Abmelden</button>
+      </div>
+    </header>
+
+    <!-- Login -->
+    <section id="loginView" class="card hidden">
+      <h2>Wie gut kennst du deine eigene Musik?</h2>
+      <p>Du hörst erst <b>0,5 Sekunden</b> eines Songs, den du selbst oft hörst. Jeder Fehlversuch gibt dir mehr Zeit – bis zu 16 Sekunden.</p>
+      <button id="loginBtn" class="btn primary">Mit Spotify anmelden</button>
+      <p class="hint">Zum Abspielen im Browser wird Spotify Premium benötigt.</p>
+      <p id="configWarn" class="error hidden">Bitte zuerst deine Client ID in <code>config.js</code> eintragen.</p>
+    </section>
+
+    <!-- Setup -->
+    <section id="setupView" class="card hidden">
+      <h2>Welche Songs?</h2>
+      <label class="field">
+        <span>Quelle</span>
+        <select id="sourceSelect">
+          <option value="mix">Alles gemischt</option>
+          <option value="top_short">Top-Songs (letzte 4 Wochen)</option>
+          <option value="top_medium">Top-Songs (letzte 6 Monate)</option>
+          <option value="top_long">Top-Songs (alle Zeit)</option>
+          <option value="recent">Zuletzt gehört</option>
+          <option value="saved">Lieblingssongs</option>
+        </select>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="randomStart">
+        <span>Zufälliger Startpunkt im Song (schwerer)</span>
+      </label>
+      <button id="startBtn" class="btn primary">Spiel starten</button>
+      <p id="setupStatus" class="hint"></p>
+    </section>
+
+    <!-- Game -->
+    <section id="gameView" class="hidden">
+      <div class="stats">
+        <div><span class="label">Punkte</span><span id="score">0</span></div>
+        <div><span class="label">Runde</span><span id="round">0</span></div>
+        <div><span class="label">Serie</span><span id="streak">0</span></div>
+      </div>
+
+      <div class="card">
+        <ol id="attempts" class="attempts"></ol>
+
+        <div class="bar" id="bar">
+          <div class="bar-unlocked" id="barUnlocked"></div>
+          <div class="bar-progress" id="barProgress"></div>
+          <div class="bar-ticks" id="barTicks"></div>
+        </div>
+        <div class="bar-labels"><span>0s</span><span id="unlockedLabel">0,5s</span><span>16s</span></div>
+
+        <button id="playBtn" class="play" aria-label="Abspielen">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+
+        <div id="guessArea">
+          <div class="search">
+            <input id="guessInput" type="text" placeholder="Song oder Interpret suchen…" autocomplete="off">
+            <ul id="suggestions" class="suggestions hidden"></ul>
+          </div>
+          <div class="row">
+            <button id="skipBtn" class="btn">Überspringen (+0,5s)</button>
+            <button id="submitBtn" class="btn primary">Raten</button>
+          </div>
+        </div>
+
+        <div id="resultArea" class="result hidden">
+          <img id="cover" alt="">
+          <div>
+            <p id="resultText" class="result-text"></p>
+            <p id="resultTitle" class="result-title"></p>
+            <p id="resultArtist" class="result-artist"></p>
+          </div>
+          <div class="row">
+            <button id="listenBtn" class="btn">Song anhören</button>
+            <button id="nextBtn" class="btn primary">Nächster Song</button>
+          </div>
+        </div>
+      </div>
+      <p id="gameStatus" class="hint center"></p>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</body>
+</html>
