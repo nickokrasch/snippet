@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <main class="app">
@@ -24,6 +24,7 @@
       <div class="hero">
         <h1>Wie gut kennst du<br>deine Musik?</h1>
         <p>Erkenne Songs nach nur <b>0,1 Sekunden</b>. Jeder Fehlversuch gibt dir etwas mehr Zeit.</p>
+        <p id="loginNote" class="notice hidden">Neu: Das Spiel kann jetzt auch deine Playlists nutzen. Bitte melde dich dafür einmal neu an.</p>
         <button id="loginBtn" class="btn primary big">Mit Spotify anmelden</button>
         <p class="hint">Zum Abspielen wird Spotify Premium benötigt.</p>
         <p id="configWarn" class="error hidden">Bitte zuerst deine Client ID in <code>config.js</code> eintragen.</p>
@@ -132,6 +133,8 @@
           <button id="menuBtn" class="btn ghost">Menü</button>
         </div>
       </div>
+      <h2 class="section-title">Deine Songs</h2>
+      <ol id="recap" class="recap"></ol>
       <h2 class="section-title">Leaderboard</h2>
       <ol id="endBoard" class="board"></ol>
     </section>
@@ -160,9 +163,10 @@
     </div>
   </div>
 
-  <script src="config.js"></script>
-  <script src="songs.js"></script>
-  <script src="app.js"></script>
+  <!-- Versionsnummer bei jedem Update erhöhen, damit Browser nicht alte Dateien benutzen -->
+  <script src="config.js?v=5"></script>
+  <script src="songs.js?v=5"></script>
+  <script src="app.js?v=5"></script>
   <script src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>

@@ -10,7 +10,11 @@ const SCOPES = [
   "user-library-read",
   "user-read-playback-state",
   "user-modify-playback-state",
+  "playlist-read-private",
+  "playlist-read-collaborative",
 ].join(" ");
+// Erhöhen, wenn neue Berechtigungen dazukommen → alle melden sich einmal neu an
+const SCOPE_VERSION = "2";
 
 const STAGES = [0.1, 0.5, 1, 2, 4, 8, 16];            // Sekunden pro Versuch
 const POINTS = [150, 100, 80, 60, 40, 20, 10];       // Punkte je nach Versuch
@@ -25,9 +29,10 @@ const SOURCES = [
   { key: "top_long", label: "Top Allzeit" },
   { key: "recent", label: "Zuletzt gehört" },
   { key: "saved", label: "Lieblingssongs" },
+  { key: "playlists", label: "Playlists" },
 ];
 
-// Grobe Genre-Gruppen; Spotify-Genres werden per Stichwort zugeordnet
+// Grobe Genre-Gruppen; Genres von Spotify/Deezer werden per Stichwort zugeordnet
 const GENRES = [
   { key: "pop", label: "Pop", match: ["pop"] },
   { key: "hiphop", label: "Hip-Hop", match: ["hip hop", "rap", "trap", "drill", "grime"] },
@@ -109,6 +114,7 @@ async function handleRedirect() {
     code_verifier: localStorage.getItem("pkce_verifier"),
   });
   localStorage.removeItem("pkce_verifier");
+  localStorage.setItem("scope_version", SCOPE_VERSION);
   window.history.replaceState({}, "", REDIRECT_URI);
 }
 
@@ -131,13 +137,18 @@ function logout() {
   window.location.href = REDIRECT_URI;
 }
 
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, attempt = 0) {
   const token = await getToken();
   const res = await fetch("https://api.spotify.com/v1" + path, {
     method,
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  // Zu viele Anfragen → kurz warten und nochmal
+  if (res.status === 429 && attempt < 4) {
+    await sleep((Number(res.headers.get("Retry-After")) || 1) * 1000 + 200);
+    return api(path, method, body, attempt + 1);
+  }
   if (res.status === 204) return null;
   const text = await res.text();
   let data = null;
@@ -180,20 +191,61 @@ function toTrack(t) {
 }
 
 // Lädt alle Quellen auf einmal und merkt sich, aus welcher Quelle ein Song stammt
-async function loadMyTracks() {
+// Holt alle Seiten einer Liste: erst Seite 1 (verrät die Gesamtzahl), dann den Rest parallel
+async function fetchAll(path, limit, onItems) {
+  const sep = path.includes("?") ? "&" : "?";
+  const first = await api(`${path}${sep}limit=${limit}&offset=0`);
+  onItems(first.items || []);
+  const total = first.total || 0;
+  const offsets = [];
+  for (let o = limit; o < total; o += limit) offsets.push(o);
+  for (let i = 0; i < offsets.length; i += 4) {
+    const pages = await Promise.allSettled(
+      offsets.slice(i, i + 4).map((o) => api(`${path}${sep}limit=${limit}&offset=${o}`)));
+    for (const p of pages) if (p.status === "fulfilled") onItems(p.value.items || []);
+  }
+}
+
+const itemTrack = (i) => i?.track || i?.item || null;
+
+async function loadMyTracks(onProgress) {
+  const byId = new Map();
+  const add = (source) => (tracks) => {
+    for (const t of tracks) {
+      if (!t || !t.id || (t.type && t.type !== "track") || t.is_local) continue;
+      if (!byId.has(t.id)) byId.set(t.id, toTrack(t));
+      byId.get(t.id).sources.add(source);
+    }
+    onProgress?.(byId.size);
+  };
+
+  const top = (range) => async () => {
+    // Spotify gibt pro Zeitraum höchstens ~100 Top-Songs heraus
+    const res = await Promise.allSettled([0, 49].map((o) =>
+      api(`/me/top/tracks?limit=50&offset=${o}&time_range=${range}`)));
+    if (res.every((r) => r.status === "rejected")) throw res[0].reason;
+    for (const r of res) if (r.status === "fulfilled") add("top_" + range.split("_")[0])(r.value.items);
+  };
+
   const fetchers = {
-    top_short: () => api("/me/top/tracks?limit=50&time_range=short_term").then((d) => d.items),
-    top_medium: () => api("/me/top/tracks?limit=50&time_range=medium_term").then((d) => d.items),
-    top_long: () => api("/me/top/tracks?limit=50&time_range=long_term").then((d) => d.items),
-    recent: () => api("/me/player/recently-played?limit=50").then((d) => d.items.map((i) => i.track)),
-    saved: async () => {
-      const out = [];
-      for (let offset = 0; offset < 200; offset += 50) {
-        const page = await api(`/me/tracks?limit=50&offset=${offset}`);
-        out.push(...page.items.map((i) => i.track));
-        if (!page.next) break;
+    top_short: top("short_term"),
+    top_medium: top("medium_term"),
+    top_long: top("long_term"),
+    recent: () => api("/me/player/recently-played?limit=50").then((d) => add("recent")(d.items.map(itemTrack))),
+    saved: () => fetchAll("/me/tracks", 50, (items) => add("saved")(items.map(itemTrack))),
+    playlists: async () => {
+      const lists = [];
+      await fetchAll("/me/playlists", 50, (items) => lists.push(...items.filter(Boolean)));
+      for (let i = 0; i < lists.length; i += 3) {
+        await Promise.allSettled(lists.slice(i, i + 3).map(async (pl) => {
+          const onItems = (items) => add("playlists")(items.map(itemTrack));
+          try {
+            await fetchAll(`/playlists/${pl.id}/items`, 50, onItems);
+          } catch {
+            await fetchAll(`/playlists/${pl.id}/tracks`, 50, onItems);
+          }
+        }));
       }
-      return out;
     },
   };
   const keys = Object.keys(fetchers);
@@ -210,40 +262,99 @@ async function loadMyTracks() {
     throw new Error("Songs konnten nicht geladen werden: " + err.message);
   }
 
-  const byId = new Map();
-  results.forEach((r, i) => {
-    if (r.status !== "fulfilled") return;
-    for (const t of r.value) {
-      if (!t || !t.id || t.type !== "track" || t.is_local) continue;
-      if (!byId.has(t.id)) byId.set(t.id, toTrack(t));
-      byId.get(t.id).sources.add(keys[i]);
-    }
-  });
-  const tracks = [...byId.values()];
-  await addGenres(tracks);
-  return tracks;
+  return [...byId.values()];
 }
 
-// Genres hängen bei Spotify an den Interpreten, nicht am Song
-async function addGenres(tracks) {
+// ---------- Genres ----------
+// Spotify liefert für Apps im Testmodus meist keine Genres → Deezer als Quelle.
+// Ergebnisse werden pro Interpret im Browser gespeichert, damit es nur einmal dauert.
+const GENRE_CACHE_KEY = "genre_cache_v1";
+const genreCache = (() => {
+  try { return JSON.parse(localStorage.getItem(GENRE_CACHE_KEY) || "{}"); } catch { return {}; }
+})();
+function saveGenreCache() {
+  try { localStorage.setItem(GENRE_CACHE_KEY, JSON.stringify(genreCache)); } catch { /* voll */ }
+}
+
+// Deezer erlaubt keine direkten Anfragen aus dem Browser, aber JSONP
+let jsonpId = 0;
+let jsonpNext = 0;
+async function jsonp(url) {
+  // max. ~8 Anfragen pro Sekunde (Deezer-Limit: 50 pro 5 s)
+  const wait = Math.max(0, jsonpNext - Date.now());
+  jsonpNext = Math.max(Date.now(), jsonpNext) + 125;
+  if (wait) await sleep(wait);
+  return new Promise((resolve, reject) => {
+    const cb = "__dz" + (++jsonpId);
+    const s = document.createElement("script");
+    const cleanup = () => { clearTimeout(timer); delete window[cb]; s.remove(); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 8000);
+    window[cb] = (d) => { cleanup(); resolve(d); };
+    s.onerror = () => { cleanup(); reject(new Error("jsonp")); };
+    s.src = url + (url.includes("?") ? "&" : "?") + "output=jsonp&callback=" + cb;
+    document.head.appendChild(s);
+  });
+}
+
+async function deezerGenres(artist, title) {
+  const q = (s) => encodeURIComponent(s);
+  let res = await jsonp(`https://api.deezer.com/search?limit=1&q=${q(`artist:"${artist}" track:"${title}"`)}`);
+  let albumId = res.data?.[0]?.album?.id;
+  if (!albumId) {
+    res = await jsonp(`https://api.deezer.com/search?limit=1&q=${q(artist)}`);
+    albumId = res.data?.[0]?.album?.id;
+  }
+  if (!albumId) return [];
+  const album = await jsonp(`https://api.deezer.com/album/${albumId}`);
+  return (album.genres?.data || []).map((g) => g.name.toLowerCase());
+}
+
+function applyGenres(tracks) {
+  for (const t of tracks) {
+    t.genres = genreKeys(t.artists.flatMap((a) => genreCache[a.name.toLowerCase()] || []));
+  }
+}
+
+// Läuft im Hintergrund; das Menü aktualisiert sich zwischendurch
+async function enrichGenres(tracks, onProgress) {
+  // 1) Spotify versuchen (klappt nur, wenn Spotify Genres liefert)
   const ids = [...new Set(tracks.flatMap((t) => t.artists.map((a) => a.id)).filter(Boolean))];
-  const genresById = new Map();
   try {
     for (let i = 0; i < ids.length; i += 50) {
       const d = await api("/artists?ids=" + ids.slice(i, i + 50).join(","));
-      for (const a of d.artists) if (a) genresById.set(a.id, a.genres || []);
+      for (const a of d.artists || []) {
+        if (a?.genres?.length) genreCache[a.name.toLowerCase()] = a.genres;
+      }
     }
-  } catch {
-    // Sammelabfrage nicht erlaubt → einzeln (begrenzt) nachladen
-    const some = ids.filter((id) => !genresById.has(id)).slice(0, 80);
-    for (let i = 0; i < some.length; i += 10) {
-      const res = await Promise.allSettled(some.slice(i, i + 10).map((id) => api("/artists/" + id)));
-      for (const r of res) if (r.status === "fulfilled") genresById.set(r.value.id, r.value.genres || []);
-    }
-  }
+  } catch { /* nicht erlaubt → Deezer */ }
+
+  // 2) Für alle übrigen Hauptinterpreten Deezer fragen
+  const todo = new Map();
   for (const t of tracks) {
-    t.genres = genreKeys(t.artists.flatMap((a) => genresById.get(a.id) || []));
+    const name = t.artists[0].name.toLowerCase();
+    if (!(name in genreCache) && !todo.has(name)) todo.set(name, t);
   }
+  applyGenres(tracks);
+  let done = 0;
+  const total = todo.size;
+  onProgress?.(done, total);
+  const queue = [...todo.entries()];
+  const worker = async () => {
+    while (queue.length) {
+      const [name, t] = queue.shift();
+      try { genreCache[name] = await deezerGenres(t.artists[0].name, t.name); } catch { /* später nochmal */ }
+      done++;
+      if (done % 15 === 0 || done === total) {
+        applyGenres(tracks);
+        saveGenreCache();
+        onProgress?.(done, total);
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  applyGenres(tracks);
+  saveGenreCache();
+  onProgress?.(total, total);
 }
 
 // All-Time-Hit bei Spotify suchen
@@ -510,7 +621,8 @@ function renderHud() {
   }
 
   const hasGenres = base.some((t) => t.genres.size);
-  $("genreNote").textContent = !loading && !hasGenres ? "– Spotify liefert für deine Songs keine Genres" : "";
+  $("genreNote").textContent = state.mode !== "mine" || loading ? ""
+    : state.genreProgress || (!hasGenres ? "– keine Genre-Infos gefunden" : "");
   const gc = $("genreChips");
   gc.innerHTML = "";
   gc.appendChild(chip("Alle", state.genres.size === 0, () => { state.genres.clear(); renderHud(); }));
@@ -540,8 +652,19 @@ function renderHud() {
 
 function ensureMyTracks() {
   if (state.myTracksPromise) return state.myTracksPromise;
-  state.myTracksPromise = loadMyTracks()
-    .then((tracks) => { state.myTracks = tracks; renderHud(); })
+  const onLoad = (n) => {
+    if (state.mode === "mine" && !state.myTracks) $("poolInfo").textContent = `Lade deine Songs… ${n}`;
+  };
+  state.myTracksPromise = loadMyTracks(onLoad)
+    .then((tracks) => {
+      state.myTracks = tracks;
+      applyGenres(tracks);
+      renderHud();
+      enrichGenres(tracks, (done, total) => {
+        state.genreProgress = done < total ? `– Genres werden ermittelt… ${done}/${total}` : "";
+        renderHud();
+      }).catch(() => {});
+    })
     .catch((e) => {
       state.myTracks = [];
       $("hudStatus").textContent = e.message;
@@ -587,6 +710,7 @@ async function startGame() {
 
     game.mode = state.mode;
     game.rounds = rounds;
+    game.results = [];
     game.score = 0;
     game.filterLabel = filterLabel();
     $("roundTotal").textContent = rounds.length;
@@ -606,6 +730,7 @@ function startRound(i) {
   game.stage = 0;
   game.history = [];
   game.finished = false;
+  game.roundStartedAt = null;
 
   const dur = game.current.duration_ms;
   game.startMs = $("randomStart").checked && dur > 60_000
@@ -685,6 +810,7 @@ async function playSnippet() {
   setPlayButton("loading");
   try {
     await game.preload;
+    game.roundStartedAt ??= performance.now(); // Bedenkzeit läuft ab dem ersten Abspielen
     playing = "snippet";
     const ok = await playSegment(game.current, game.startMs, seconds, (t) => setRing(t / seconds));
     if (ok && playing) setPlayButton("playing");
@@ -745,6 +871,13 @@ function finish(won) {
   const t = game.current;
   const pts = won ? POINTS[game.stage] : 0;
   game.score += pts;
+  game.results.push({
+    track: t,
+    won,
+    seconds: STAGES[game.stage],
+    points: pts,
+    thinkMs: game.roundStartedAt ? performance.now() - game.roundStartedAt : 0,
+  });
   renderGame();
 
   $("guessArea").classList.add("hidden");
@@ -921,7 +1054,47 @@ async function endGame() {
   $("endInfo").textContent = (game.score > myBest && before.length ? "Neuer persönlicher Rekord! · " : "") +
     `${game.score} von ${max} möglichen Punkten · ${game.filterLabel}`;
   show("endView");
+  renderRecap();
   renderBoard($("endBoard"), game.mode, entry.date);
+}
+
+function fmtThink(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} min`;
+}
+
+// Alle Songs der Runde mit Ergebnis und Bedenkzeit
+function renderRecap() {
+  const list = $("recap");
+  list.innerHTML = "";
+  for (const r of game.results) {
+    const li = document.createElement("li");
+    li.className = r.won ? "won" : "lost";
+
+    const img = document.createElement("img");
+    img.alt = "";
+    if (r.track.cover) img.src = r.track.cover;
+
+    const info = document.createElement("div");
+    info.className = "info";
+    const b = document.createElement("b");
+    b.textContent = r.track.name;
+    const small = document.createElement("small");
+    small.textContent = r.track.artists.map((a) => a.name).join(", ");
+    info.append(b, small);
+
+    const res = document.createElement("div");
+    res.className = "res";
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = r.won ? `✓ ${fmtSec(r.seconds)} s` : "✗";
+    const time = document.createElement("small");
+    time.textContent = (r.won ? `+${r.points} · ` : "") + fmtThink(r.thinkMs);
+    res.append(badge, time);
+
+    li.append(img, info, res);
+    list.appendChild(li);
+  }
 }
 
 let boardMode = "mine";
@@ -1042,6 +1215,12 @@ async function init() {
     await handleRedirect();
   } catch (e) {
     alert(e.message);
+  }
+
+  // Neue Berechtigungen (z. B. Playlists) → einmal neu anmelden
+  if (localStorage.getItem("access_token") && localStorage.getItem("scope_version") !== SCOPE_VERSION) {
+    ["access_token", "refresh_token", "expires_at"].forEach((k) => localStorage.removeItem(k));
+    $("loginNote").classList.remove("hidden");
   }
 
   if (!(await getToken())) return show("loginView");
