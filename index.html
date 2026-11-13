@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <main class="app">
@@ -72,6 +72,7 @@
       </div>
       <button id="boardBtn" class="btn ghost wide">Leaderboard</button>
       <p id="hudStatus" class="status"></p>
+      <p class="center"><button id="diagBtn" class="link">Diagnose</button></p>
     </section>
 
     <!-- Spiel -->
@@ -153,6 +154,17 @@
       <ol id="board" class="board"></ol>
       <p id="boardNote" class="hint center"></p>
     </section>
+
+    <!-- Diagnose -->
+    <section id="diagView" class="view hidden">
+      <div class="game-top">
+        <button id="diagBackBtn" class="link">← Menü</button>
+        <span>Diagnose</span>
+        <span></span>
+      </div>
+      <button id="diagCopyBtn" class="btn primary wide">Protokoll kopieren</button>
+      <pre id="diagLog" class="diag-log"></pre>
+    </section>
   </main>
 
   <div id="celebrate" class="celebrate hidden">
@@ -164,9 +176,9 @@
   </div>
 
   <!-- Versionsnummer bei jedem Update erhöhen, damit Browser nicht alte Dateien benutzen -->
-  <script src="config.js?v=5"></script>
-  <script src="songs.js?v=5"></script>
-  <script src="app.js?v=5"></script>
+  <script src="config.js?v=6"></script>
+  <script src="songs.js?v=6"></script>
+  <script src="app.js?v=6"></script>
   <script src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>

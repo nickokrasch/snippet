@@ -59,6 +59,16 @@ const DECADES = [
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------- Diagnose-Protokoll ----------
+const diag = [];
+function log(msg) {
+  diag.push(new Date().toLocaleTimeString("de-DE") + "  " + msg);
+  if (diag.length > 400) diag.shift();
+  if (!$("diagView").classList.contains("hidden")) $("diagLog").textContent = diag.join("\n");
+}
+window.addEventListener("error", (e) => log("JS-Fehler: " + e.message));
+window.addEventListener("unhandledrejection", (e) => log("JS-Fehler: " + (e.reason?.message || e.reason)));
+
 // ---------- Auth (PKCE, kein Server nötig) ----------
 function randomString(len) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -154,6 +164,7 @@ async function api(path, method = "GET", body, attempt = 0) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* Spotify antwortet bei manchen Fehlern mit reinem Text */ }
   if (!res.ok) {
+    log(`API ${method} ${path.split("?")[0]} → ${res.status} ${(data?.error?.message || text || "").slice(0, 120)}`);
     const err = new Error(data?.error?.message || text || res.statusText);
     err.status = res.status;
     throw err;
@@ -199,11 +210,19 @@ async function fetchAll(path, limit, onItems) {
   const total = first.total || 0;
   const offsets = [];
   for (let o = limit; o < total; o += limit) offsets.push(o);
+  let failedPages = 0;
   for (let i = 0; i < offsets.length; i += 4) {
     const pages = await Promise.allSettled(
       offsets.slice(i, i + 4).map((o) => api(`${path}${sep}limit=${limit}&offset=${o}`)));
-    for (const p of pages) if (p.status === "fulfilled") onItems(p.value.items || []);
+    for (const p of pages) {
+      if (p.status === "fulfilled") onItems(p.value.items || []);
+      else failedPages++;
+    }
   }
+  if (!path.startsWith("/playlists/")) {
+    log(`${path}: Spotify meldet ${total} Einträge, ${offsets.length + 1} Seiten, ${failedPages} fehlgeschlagen`);
+  }
+  return total;
 }
 
 const itemTrack = (i) => i?.track || i?.item || null;
@@ -236,20 +255,34 @@ async function loadMyTracks(onProgress) {
     playlists: async () => {
       const lists = [];
       await fetchAll("/me/playlists", 50, (items) => lists.push(...items.filter(Boolean)));
+      let ok = 0;
       for (let i = 0; i < lists.length; i += 3) {
         await Promise.allSettled(lists.slice(i, i + 3).map(async (pl) => {
           const onItems = (items) => add("playlists")(items.map(itemTrack));
           try {
-            await fetchAll(`/playlists/${pl.id}/items`, 50, onItems);
-          } catch {
-            await fetchAll(`/playlists/${pl.id}/tracks`, 50, onItems);
+            try {
+              await fetchAll(`/playlists/${pl.id}/items`, 50, onItems);
+            } catch {
+              await fetchAll(`/playlists/${pl.id}/tracks`, 50, onItems);
+            }
+            ok++;
+          } catch (e) {
+            log(`Playlist „${pl.name}“: nicht lesbar (${e.status || ""} ${e.message.slice(0, 80)})`);
           }
         }));
       }
+      log(`Playlists: ${lists.length} gefunden, ${ok} gelesen`);
     },
   };
   const keys = Object.keys(fetchers);
   const results = await Promise.allSettled(keys.map((k) => fetchers[k]()));
+  results.forEach((r, i) => {
+    const n = [...byId.values()].filter((t) => t.sources.has(keys[i])).length;
+    log(r.status === "fulfilled"
+      ? `Quelle ${keys[i]}: ${n} Songs`
+      : `Quelle ${keys[i]}: FEHLER ${r.reason?.status || ""} ${r.reason?.message?.slice(0, 120)}`);
+  });
+  log(`Insgesamt ${byId.size} verschiedene Songs`);
 
   // Alle Anfragen fehlgeschlagen → echten Grund anzeigen statt "zu wenige Songs"
   const failed = results.filter((r) => r.status === "rejected");
@@ -319,14 +352,18 @@ function applyGenres(tracks) {
 async function enrichGenres(tracks, onProgress) {
   // 1) Spotify versuchen (klappt nur, wenn Spotify Genres liefert)
   const ids = [...new Set(tracks.flatMap((t) => t.artists.map((a) => a.id)).filter(Boolean))];
+  let spotifyGenres = 0;
   try {
     for (let i = 0; i < ids.length; i += 50) {
       const d = await api("/artists?ids=" + ids.slice(i, i + 50).join(","));
       for (const a of d.artists || []) {
-        if (a?.genres?.length) genreCache[a.name.toLowerCase()] = a.genres;
+        if (a?.genres?.length) { genreCache[a.name.toLowerCase()] = a.genres; spotifyGenres++; }
       }
     }
-  } catch { /* nicht erlaubt → Deezer */ }
+    log(`Genres von Spotify: ${spotifyGenres} von ${ids.length} Interpreten`);
+  } catch (e) {
+    log(`Genres von Spotify: nicht verfügbar (${e.status || e.message})`);
+  }
 
   // 2) Für alle übrigen Hauptinterpreten Deezer fragen
   const todo = new Map();
@@ -336,13 +373,24 @@ async function enrichGenres(tracks, onProgress) {
   }
   applyGenres(tracks);
   let done = 0;
+  let found = 0;
+  let empty = 0;
+  let failed = 0;
   const total = todo.size;
+  log(`Deezer: ${total} Interpreten ohne Genre, ${Object.keys(genreCache).length} schon gespeichert`);
   onProgress?.(done, total);
   const queue = [...todo.entries()];
   const worker = async () => {
     while (queue.length) {
       const [name, t] = queue.shift();
-      try { genreCache[name] = await deezerGenres(t.artists[0].name, t.name); } catch { /* später nochmal */ }
+      try {
+        const g = await deezerGenres(t.artists[0].name, t.name);
+        genreCache[name] = g;
+        g.length ? found++ : empty++;
+      } catch (e) {
+        failed++;
+        if (failed <= 3) log(`Deezer-Fehler bei „${t.artists[0].name}“: ${e.message}`);
+      }
       done++;
       if (done % 15 === 0 || done === total) {
         applyGenres(tracks);
@@ -354,6 +402,8 @@ async function enrichGenres(tracks, onProgress) {
   await Promise.all([worker(), worker(), worker()]);
   applyGenres(tracks);
   saveGenreCache();
+  log(`Deezer fertig: ${found} mit Genre, ${empty} ohne Genre, ${failed} Fehler · ` +
+    `${tracks.filter((t) => t.genres.size).length} von ${tracks.length} Songs haben jetzt ein Genre`);
   onProgress?.(total, total);
 }
 
@@ -404,7 +454,12 @@ window.onSpotifyWebPlaybackSDKReady = () => {
     player.addListener("authentication_error", ({ message }) => reject(new Error(message)));
     player.addListener("account_error", () =>
       reject(new Error("Für die Wiedergabe im Browser brauchst du Spotify Premium.")));
-    player.addListener("playback_error", ({ message }) => setStatus("Wiedergabefehler: " + message));
+    player.addListener("playback_error", ({ message }) => {
+      log("SDK playback_error: " + message);
+      setStatus("Wiedergabefehler: " + message);
+    });
+    player.addListener("not_ready", () => log("SDK: Player nicht mehr bereit (not_ready)"));
+    player.addListener("autoplay_failed", () => log("SDK: Autoplay vom Browser blockiert"));
     player.addListener("player_state_changed", onPlayerState);
   });
   playerReady.catch(() => {});
@@ -462,9 +517,11 @@ async function playSegment(track, startMs, seconds, onProgress) {
   clearTimeout(stopTimer);
   cancelAnimationFrame(rafId);
   busy = true;
+  const tClick = performance.now();
   try {
     const state = await player.getCurrentState();
-    if (state && isCurrent(state, track)) {
+    const loaded = state && isCurrent(state, track);
+    if (loaded) {
       await player.pause();
       await player.seek(startMs);
       await waitForState((s) => Math.abs(s.position - startMs) < 250, 3000);
@@ -475,7 +532,21 @@ async function playSegment(track, startMs, seconds, onProgress) {
     const s = await waitForState((s) => !s.paused && isCurrent(s, track));
     if (myToken !== playToken) return false;
 
-    const t0 = performance.now() - Math.min(Math.max(0, s.position - startMs), 300);
+    // "Läuft" heißt noch nicht "Ton ist da": warten, bis sich die Position wirklich bewegt
+    let moving = null;
+    const until = performance.now() + 2000;
+    while (performance.now() < until) {
+      const s2 = await player.getCurrentState();
+      if (myToken !== playToken) return false;
+      if (s2 && !s2.paused && s2.position > s.position + 15) { moving = s2; break; }
+      await sleep(15);
+    }
+    const ref = moving || s;
+    const playedMs = Math.max(0, ref.position - startMs);
+    const t0 = performance.now() - Math.min(playedMs, 1000);
+    log(`Start (${loaded ? "vorgeladen" : "neu geladen"}): soll ${seconds === Infinity ? "ganzer Song" : seconds + " s"}, ` +
+      `Verzögerung ${Math.round(performance.now() - tClick)} ms, ` +
+      (moving ? `Ton läuft seit ${playedMs} ms` : "Position bewegt sich nicht (Schätzung)"));
     const tick = () => {
       if (myToken !== playToken) return;
       const elapsed = (performance.now() - t0) / 1000;
@@ -486,7 +557,13 @@ async function playSegment(track, startMs, seconds, onProgress) {
 
     if (seconds !== Infinity) {
       const remaining = seconds * 1000 - (performance.now() - t0);
-      stopTimer = setTimeout(() => { if (myToken === playToken) stopPlayback(); }, Math.max(0, remaining));
+      stopTimer = setTimeout(async () => {
+        if (myToken !== playToken) return;
+        stopPlayback();
+        await sleep(150);
+        const end = await player.getCurrentState();
+        if (end) log(`Gestoppt: soll ${seconds} s, laut Spotify gespielt ${((end.position - startMs) / 1000).toFixed(2)} s`);
+      }, Math.max(0, remaining));
     }
     return true;
   } catch (e) {
@@ -559,7 +636,7 @@ function shuffle(arr) {
 function setStatus(text) { $("gameStatus").textContent = text || ""; }
 
 function show(view) {
-  for (const v of ["loginView", "hudView", "gameView", "endView", "boardView"]) {
+  for (const v of ["loginView", "hudView", "gameView", "endView", "boardView", "diagView"]) {
     $(v).classList.toggle("hidden", v !== view);
   }
   window.scrollTo(0, 0);
@@ -751,7 +828,7 @@ function startRound(i) {
   // Song im Hintergrund vorladen
   setPlayButton("loading");
   game.preload = preloadTrack(game.current, game.startMs)
-    .catch((e) => setStatus(e.message))
+    .catch((e) => { log("Vorladen fehlgeschlagen: " + e.message); setStatus(e.message); })
     .finally(() => { if (!playing) setPlayButton("idle"); });
 }
 
@@ -1174,6 +1251,20 @@ function bindEvents() {
   }));
   $("startBtn").addEventListener("click", startGame);
   $("boardBtn").addEventListener("click", openBoard);
+  $("diagBtn").addEventListener("click", () => {
+    show("diagView");
+    $("diagLog").textContent = diag.join("\n") || "Noch keine Einträge.";
+  });
+  $("diagBackBtn").addEventListener("click", goHud);
+  $("diagCopyBtn").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(diag.join("\n"));
+      $("diagCopyBtn").textContent = "Kopiert ✓";
+    } catch {
+      $("diagCopyBtn").textContent = "Kopieren nicht möglich – Text markieren";
+    }
+    setTimeout(() => { $("diagCopyBtn").textContent = "Protokoll kopieren"; }, 2000);
+  });
   $("boardBackBtn").addEventListener("click", goHud);
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
     boardMode = t.dataset.board;
