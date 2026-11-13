@@ -563,13 +563,26 @@ async function playSegment(track, startMs, seconds, onProgress) {
 }
 
 function stopPlayback() {
-  playToken++;
+  const myToken = ++playToken;
   clearTimeout(stopTimer);
   cancelAnimationFrame(rafId);
-  player?.pause();
   playing = null;
   setPlayButton("idle");
   setRing(0);
+  if (player) ensurePaused(myToken);
+}
+
+// Spotify ignoriert eine Pause manchmal (v. a. beim allerersten Abspielen) → prüfen und wiederholen
+async function ensurePaused(token) {
+  for (let i = 0; i < 4; i++) {
+    await player.pause().catch(() => {});
+    await sleep(i === 0 ? 60 : 250);
+    if (token !== playToken) return; // inzwischen wurde neu gestartet
+    const s = await player.getCurrentState();
+    if (!s || s.paused) return;
+    log(`Pause wurde ignoriert – neuer Versuch (${i + 2})`);
+    if (i >= 1) await api(`/me/player/pause?device_id=${deviceId}`, "PUT").catch(() => {});
+  }
 }
 
 // Song ist von selbst zu Ende gelaufen
@@ -766,8 +779,12 @@ async function startGame() {
     game.filterLabel = filterLabel();
 
     $("poolInfo").textContent = "Lade Song…";
+    // Browser-Player bei Spotify schon jetzt als aktives Gerät anmelden (ohne Ton),
+    // damit der erste Klick nicht mit der Geräteübernahme kollidiert
+    await api("/me/player", "PUT", { device_ids: [deviceId], play: false })
+      .catch((e) => log("Gerät aktivieren fehlgeschlagen: " + e.message));
     const first = await prepareNext();
-    game.next = prepareNext(); // nächsten Song schon im Hintergrund vorbereiten
+    preloadNext();
     show("gameView");
     startRound(first);
   } catch (e) {
@@ -969,16 +986,22 @@ function finish(won) {
   playFull(); // Song direkt abspielen
 }
 
+// Nächsten Song im Hintergrund vorbereiten: Daten + Cover
+function preloadNext() {
+  game.next = prepareNext();
+  game.next.then((t) => { if (t?.cover) new Image().src = t.cover; }).catch(() => {});
+}
+
 async function nextSong() {
   const btn = $("nextBtn");
   btn.disabled = true;
   try {
     const track = await game.next;
-    game.next = prepareNext();
+    preloadNext();
     startRound(track);
   } catch (e) {
     setStatus(e.message);
-    game.next = prepareNext();
+    preloadNext();
   } finally {
     btn.disabled = false;
   }
@@ -1276,6 +1299,7 @@ function bindEvents() {
   }));
 
   $("quitBtn").addEventListener("click", quitGame);
+  $("gameMenuBtn").addEventListener("click", goHud);
   $("playBtn").addEventListener("click", onPlayClick);
   $("skipBtn").addEventListener("click", skip);
   $("submitBtn").addEventListener("click", submitGuess);
