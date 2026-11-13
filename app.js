@@ -203,7 +203,16 @@ async function playSegment(track, startMs, seconds, onProgress) {
   const myToken = ++playToken;
   clearTimeout(stopTimer);
   cancelAnimationFrame(rafId);
+  try {
+    await startSegment(track, startMs, seconds, onProgress, myToken);
+  } catch (e) {
+    // Sicherheitsnetz: nie weiterlaufen lassen, wenn etwas schiefging
+    if (myToken === playToken) player.pause();
+    throw e;
+  }
+}
 
+async function startSegment(track, startMs, seconds, onProgress, myToken) {
   const state = await player.getCurrentState();
   const loaded = state && state.track_window.current_track?.id === track.id;
   if (loaded) {
@@ -224,12 +233,14 @@ async function playSegment(track, startMs, seconds, onProgress) {
   const offset = Math.min(Math.max(0, s.position - startMs), 300);
   const t0 = performance.now() - offset;
 
-  const tick = () => {
-    const elapsed = (performance.now() - t0) / 1000;
-    onProgress?.(Math.min(elapsed, seconds));
-    if (elapsed < seconds) rafId = requestAnimationFrame(tick);
-  };
-  tick();
+  if (onProgress) {
+    const tick = () => {
+      const elapsed = (performance.now() - t0) / 1000;
+      onProgress(Math.min(elapsed, seconds));
+      if (elapsed < seconds) rafId = requestAnimationFrame(tick);
+    };
+    tick();
+  }
 
   if (seconds !== Infinity) {
     const remaining = seconds * 1000 - (performance.now() - t0);
@@ -281,6 +292,7 @@ function setStatus(text) { $("gameStatus").textContent = text || ""; }
 
 function nextRound() {
   stopPlayback();
+  setListening(false);
   if (game.queue.length === 0) game.queue = shuffle([...game.pool]);
   game.current = game.queue.pop();
   game.stage = 0;
@@ -408,10 +420,26 @@ function finish(won) {
   $("cover").src = t.album.images?.[0]?.url || "";
 }
 
-async function listenFull() {
+let listening = false;
+
+function setListening(on) {
+  listening = on;
+  $("listenBtn").textContent = on ? "Stopp" : "Song anhören";
+}
+
+async function toggleListen() {
+  if (listening) {
+    stopPlayback();
+    setListening(false);
+    return;
+  }
+  setListening(true);
   try {
-    await playSegment(game.current, game.startMs, Infinity, null);
-  } catch (e) { setStatus(e.message); }
+    await playSegment(game.current, 0, Infinity, null);
+  } catch (e) {
+    setListening(false);
+    setStatus(e.message);
+  }
 }
 
 // ---------- Suche / Vorschläge ----------
@@ -503,7 +531,7 @@ function bindEvents() {
   $("skipBtn").addEventListener("click", skip);
   $("submitBtn").addEventListener("click", submitGuess);
   $("nextBtn").addEventListener("click", () => { nextRound(); playCurrent(); });
-  $("listenBtn").addEventListener("click", listenFull);
+  $("listenBtn").addEventListener("click", toggleListen);
 
   const input = $("guessInput");
   input.addEventListener("input", updateSuggestions);
