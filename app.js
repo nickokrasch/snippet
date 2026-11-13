@@ -637,7 +637,7 @@ function shuffle(arr) {
 function setStatus(text) { $("gameStatus").textContent = text || ""; }
 
 function show(view) {
-  for (const v of ["loginView", "hudView", "gameView", "endView", "boardView", "diagView"]) {
+  for (const v of ["loginView", "hudView", "gameView", "endView", "boardView", "historyView", "diagView"]) {
     $(v).classList.toggle("hidden", v !== view);
   }
   window.scrollTo(0, 0);
@@ -866,7 +866,7 @@ function renderGame() {
   if (!game.finished) {
     $("playHint").textContent = `Du hörst ${fmtSec(STAGES[game.stage])} Sekunden · ${POINTS[game.stage]} Punkte möglich`;
     const next = STAGES[game.stage + 1];
-    $("skipBtn").textContent = next ? `Überspringen (+${fmtSec(+(next - STAGES[game.stage]).toFixed(1))}s)` : "Aufgeben";
+    $("skipBtn").textContent = next ? `Mehr hören (+${fmtSec(+(next - STAGES[game.stage]).toFixed(1))} s)` : "Aufgeben";
   }
 }
 
@@ -947,6 +947,24 @@ function skip() {
   if (!game.finished) addAttempt({ type: "skipped" });
 }
 
+// Ganzen Song überspringen → direkt zum nächsten (keine Punkte, kommt als "übersprungen" in die Bibliothek)
+function skipSong() {
+  if (game.finished) return nextSong();
+  game.finished = true;
+  stopPlayback();
+  const r = {
+    track: game.current,
+    won: false,
+    skipped: true,
+    seconds: STAGES[game.stage],
+    points: 0,
+    thinkMs: game.roundStartedAt ? performance.now() - game.roundStartedAt : 0,
+  };
+  game.results.push(r);
+  History.add(r);
+  nextSong();
+}
+
 function finish(won) {
   game.finished = true;
   stopPlayback();
@@ -960,6 +978,7 @@ function finish(won) {
     points: pts,
     thinkMs: game.roundStartedAt ? performance.now() - game.roundStartedAt : 0,
   });
+  History.add(game.results[game.results.length - 1]);
   renderGame();
 
   $("guessArea").classList.add("hidden");
@@ -1171,9 +1190,147 @@ function fmtThink(ms) {
 function renderRecap() {
   const list = $("recap");
   list.innerHTML = "";
-  for (const r of game.results) {
+  for (const r of game.results) list.appendChild(recapItem(r));
+}
+
+// ---------- Verlauf (alle jemals gespielten Songs) ----------
+const HISTORY_KEY = "history_v1";
+const History = {
+  all() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; }
+  },
+  add(r) {
+    const list = this.all();
+    list.push({
+      name: r.track.name,
+      artists: r.track.artists.map((a) => a.name),
+      cover: r.track.cover || "",
+      won: r.won,
+      skipped: !!r.skipped,
+      seconds: r.seconds,
+      points: r.points,
+      thinkMs: Math.round(r.thinkMs),
+      mode: game.mode,
+      date: Date.now(),
+    });
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(-5000))); } catch { /* voll */ }
+  },
+};
+
+const histTrack = (h) => ({ name: h.name, artists: h.artists.map((name) => ({ name })), cover: h.cover });
+const statusOf = (h) => (h.won ? "won" : h.skipped ? "skipped" : "lost");
+
+// Gleicher Song = gleicher Titel + Hauptinterpret
+function librarySongs(all) {
+  const map = new Map();
+  for (const h of all) {
+    const key = norm(h.name) + "|" + norm(h.artists[0] || "");
+    let s = map.get(key);
+    if (!s) {
+      s = { name: h.name, artists: h.artists, cover: h.cover, plays: 0, wins: 0, skips: 0, best: null, fastestMs: null, last: 0 };
+      map.set(key, s);
+    }
+    s.plays++;
+    if (h.cover) s.cover = h.cover;
+    if (h.won) {
+      s.wins++;
+      if (s.best === null || h.seconds < s.best) s.best = h.seconds;
+      if (s.fastestMs === null || h.thinkMs < s.fastestMs) s.fastestMs = h.thinkMs;
+    }
+    if (h.skipped) s.skips++;
+    s.last = Math.max(s.last, h.date);
+  }
+  return [...map.values()].sort((a, b) => b.last - a.last);
+}
+
+let historyView = "songs";
+let historyFilter = "all";
+
+function openHistory() {
+  show("historyView");
+  renderHistory();
+}
+
+function renderHistory() {
+  document.querySelectorAll("[data-hview]").forEach((t) => t.classList.toggle("active", t.dataset.hview === historyView));
+  document.querySelectorAll("[data-hfilter]").forEach((t) => t.classList.toggle("on", t.dataset.hfilter === historyFilter));
+
+  const all = History.all();
+  const songs = librarySongs(all);
+  const played = all.filter((h) => !h.skipped);
+  $("hsSongs").textContent = songs.length;
+  $("hsRate").textContent = played.length ? Math.round((played.filter((h) => h.won).length / played.length) * 100) + " %" : "0 %";
+  $("hsFast").textContent = all.filter((h) => h.won && h.seconds === STAGES[0]).length;
+
+  const q = $("libSearch").value.trim().toLowerCase();
+  const matchText = (x) => !q || (x.name + " " + x.artists.join(" ")).toLowerCase().includes(q);
+  const list = $("historyList");
+  list.innerHTML = "";
+  const empty = (text) => {
     const li = document.createElement("li");
-    li.className = r.won ? "won" : "lost";
+    li.className = "history-day";
+    li.textContent = text;
+    list.appendChild(li);
+  };
+  if (!all.length) return empty("Noch keine Songs – spiel eine Runde!");
+
+  if (historyView === "songs") {
+    const shown = songs.filter((s) => matchText(s) && (
+      historyFilter === "all" ||
+      (historyFilter === "won" && s.wins > 0) ||
+      (historyFilter === "lost" && s.wins === 0 && s.plays > s.skips) ||
+      (historyFilter === "skipped" && s.skips > 0)));
+    if (!shown.length) return empty("Keine passenden Songs.");
+    for (const s of shown.slice(0, 1000)) list.appendChild(libraryItem(s));
+    return;
+  }
+
+  const shown = all.filter((h) => matchText(h) && (historyFilter === "all" || statusOf(h) === historyFilter)).reverse();
+  if (!shown.length) return empty("Keine passenden Einträge.");
+  let lastDay = "";
+  for (const h of shown.slice(0, 1000)) {
+    const day = new Date(h.date).toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    if (day !== lastDay) {
+      const d = document.createElement("li");
+      d.className = "history-day";
+      d.textContent = day;
+      list.appendChild(d);
+      lastDay = day;
+    }
+    list.appendChild(recapItem({ ...h, track: histTrack(h) }, h.date));
+  }
+}
+
+// Eintrag in der Songs-Ansicht der Bibliothek
+function libraryItem(s) {
+  const li = document.createElement("li");
+  li.className = s.wins ? "won" : s.plays === s.skips ? "skipped" : "lost";
+  const img = document.createElement("img");
+  img.alt = "";
+  if (s.cover) img.src = s.cover;
+  const info = document.createElement("div");
+  info.className = "info";
+  const b = document.createElement("b");
+  b.textContent = s.name;
+  const small = document.createElement("small");
+  small.textContent = s.artists.join(", ");
+  info.append(b, small);
+  const res = document.createElement("div");
+  res.className = "res";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = s.wins ? `Bestzeit ${fmtSec(s.best)} s` : s.plays === s.skips ? "übersprungen" : "nie erraten";
+  const stats = document.createElement("small");
+  stats.textContent = `${s.plays}× gespielt · ${s.wins}× erraten`;
+  res.append(badge, stats);
+  li.append(img, info, res);
+  return li;
+}
+
+function recapItem(r, date) {
+  {
+    const li = document.createElement("li");
+    li.className = r.won ? "won" : r.skipped ? "skipped" : "lost";
 
     const img = document.createElement("img");
     img.alt = "";
@@ -1191,20 +1348,21 @@ function renderRecap() {
     res.className = "res";
     const badge = document.createElement("span");
     badge.className = "badge";
-    badge.textContent = r.won ? `✓ ${fmtSec(r.seconds)} s` : "✗";
+    badge.textContent = r.won ? `✓ ${fmtSec(r.seconds)} s` : r.skipped ? "übersprungen" : "✗";
     const time = document.createElement("small");
-    time.textContent = (r.won ? `+${r.points} · ` : "") + fmtThink(r.thinkMs);
+    time.textContent = (r.won ? `+${r.points} · ` : "") + fmtThink(r.thinkMs) +
+      (date ? " · " + new Date(date).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "");
     res.append(badge, time);
 
     li.append(img, info, res);
-    list.appendChild(li);
+    return li;
   }
 }
 
 let boardMode = "mine";
 function openBoard() {
   show("boardView");
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.board === boardMode));
+  document.querySelectorAll("[data-board]").forEach((t) => t.classList.toggle("active", t.dataset.board === boardMode));
   $("boardNote").textContent = Board.remote ? "" : "Dieses Leaderboard wird nur in diesem Browser gespeichert.";
   renderBoard($("board"), boardMode);
 }
@@ -1293,10 +1451,22 @@ function bindEvents() {
     setTimeout(() => { $("diagCopyBtn").textContent = "Protokoll kopieren"; }, 2000);
   });
   $("boardBackBtn").addEventListener("click", goHud);
-  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
+  document.querySelectorAll("[data-board]").forEach((t) => t.addEventListener("click", () => {
     boardMode = t.dataset.board;
     openBoard();
   }));
+  $("historyBtn").addEventListener("click", openHistory);
+  $("historyBackBtn").addEventListener("click", goHud);
+  document.querySelectorAll("[data-hfilter]").forEach((t) => t.addEventListener("click", () => {
+    historyFilter = t.dataset.hfilter;
+    renderHistory();
+  }));
+  document.querySelectorAll("[data-hview]").forEach((t) => t.addEventListener("click", () => {
+    historyView = t.dataset.hview;
+    renderHistory();
+  }));
+  $("libSearch").addEventListener("input", renderHistory);
+  $("skipSongBtn").addEventListener("click", skipSong);
 
   $("quitBtn").addEventListener("click", quitGame);
   $("gameMenuBtn").addEventListener("click", goHud);

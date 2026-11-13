@@ -232,6 +232,13 @@ input[type=text]:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .recap li.won .badge { color: var(--accent); }
 .recap li.lost .badge { color: var(--bad); }
 
+.recap .date { color: var(--muted); font-size: 11px; }
+.history-day { list-style: none; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 2px; }
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat { background: var(--surface); border-radius: 14px; padding: 12px 14px; box-shadow: inset 0 0 0 1px var(--line); }
+.stat b { display: block; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.stat small { color: var(--muted); font-size: 12px; }
+
 .notice { background: #1ed7601a; color: var(--text) !important; border-radius: 12px; padding: 12px 14px; font-size: 14px; }
 
 .diag-log {
@@ -240,6 +247,77 @@ input[type=text]:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
   font: 12px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word;
   max-height: 70vh; overflow-y: auto;
 }
+
+/* Bibliothek */
+.lib-tools { display: grid; gap: 10px; margin-bottom: 12px; }
+.recap li.skipped .badge { color: var(--muted); }
+
+/* Song überspringen */
+.skip-song { margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
+.skip-song svg { width: 18px; height: 18px; fill: currentColor; }
+.skip-song:hover { color: var(--text); }
+
+/* ---------- Größere Darstellung ---------- */
+body { font-size: 17px; }
+.app { max-width: 680px; padding: 28px 20px 64px; }
+.logo { font-size: 28px; }
+.user { font-size: 15px; }
+.link { font-size: 16px; }
+.btn { padding: 15px 24px; font-size: 16px; }
+.btn.big { padding: 18px 34px; font-size: 18px; }
+.hero h1 { font-size: 48px; }
+.hero p { max-width: 420px; font-size: 18px; }
+.hint { font-size: 15px; }
+.status { font-size: 15px; }
+
+.mode { padding: 22px; gap: 4px; }
+.mode svg { width: 34px; height: 34px; }
+.mode b { font-size: 19px; }
+.mode small { font-size: 14px; }
+.panel { padding: 8px 22px; }
+.group { padding: 18px 0; }
+.group h3 { font-size: 13px; margin-bottom: 12px; }
+.chips { gap: 8px; }
+.chip { font-size: 15px; padding: 9px 15px; }
+.chip small { font-size: 12px; }
+.switch { font-size: 16px; }
+.pool-info { font-size: 15px; }
+
+.game-top { font-size: 16px; margin-bottom: 16px; }
+.game-card { padding: 28px; }
+.stages { gap: 6px; }
+.stage i { height: 8px; border-radius: 4px; }
+.stage span { font-size: 13px; }
+.player { width: 240px; height: 240px; margin-top: 32px; }
+.play { width: 160px; height: 160px; }
+.play .icon { width: 60px; height: 60px; }
+.play.loading .icon-load { width: 44px; height: 44px; }
+.player.revealed .play { width: 96px; height: 96px; }
+.player.revealed .play .icon { width: 42px; height: 42px; }
+.play-hint { font-size: 15px; margin: 18px 0 20px; }
+.guess-list li { font-size: 15px; padding: 11px 14px; }
+input[type=text] { font-size: 17px; padding: 16px 16px; border-radius: 14px; }
+.suggestions li { font-size: 16px; padding: 11px 12px; }
+.result-text { font-size: 17px; }
+.result-title { font-size: 30px; }
+.result-artist { font-size: 18px; }
+
+.end-score { font-size: 84px; }
+.section-title { font-size: 15px; }
+.tab { font-size: 15px; padding: 11px; }
+.board li { padding: 15px 18px; }
+.board .who b { font-size: 16px; }
+.board .who small { font-size: 13px; }
+.board .pts { font-size: 18px; }
+.recap li { grid-template-columns: 56px 1fr auto; padding: 10px 14px 10px 10px; gap: 14px; }
+.recap img { width: 56px; height: 56px; }
+.recap .info b { font-size: 16px; }
+.recap .info small, .recap .res small { font-size: 13px; }
+.recap .badge { font-size: 15px; }
+.history-day { font-size: 13px; }
+.stat { padding: 16px; }
+.stat b { font-size: 30px; }
+.stat small { font-size: 13px; }
 
 /* 0,1-Sekunden-Feier */
 .celebrate { position: fixed; inset: 0; z-index: 100; pointer-events: none; display: grid; place-items: center; }

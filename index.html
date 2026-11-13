@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <main class="app">
@@ -70,7 +70,10 @@
         <span id="poolInfo" class="pool-info"></span>
         <button id="startBtn" class="btn primary big">Spiel starten</button>
       </div>
-      <button id="boardBtn" class="btn ghost wide">Leaderboard</button>
+      <div class="row">
+        <button id="historyBtn" class="btn ghost">Bibliothek</button>
+        <button id="boardBtn" class="btn ghost">Leaderboard</button>
+      </div>
       <p id="hudStatus" class="status"></p>
       <p class="center"><button id="diagBtn" class="link">Diagnose</button></p>
     </section>
@@ -108,9 +111,13 @@
             <ul id="suggestions" class="suggestions hidden"></ul>
           </div>
           <div class="row">
-            <button id="skipBtn" class="btn ghost">Überspringen</button>
+            <button id="skipBtn" class="btn ghost">Mehr hören</button>
             <button id="submitBtn" class="btn primary">Raten</button>
           </div>
+          <button id="skipSongBtn" class="btn ghost wide skip-song">
+            <svg viewBox="0 0 24 24"><path d="M6 6v12l8.5-6zM16 6h2.5v12H16z"/></svg>
+            Song überspringen
+          </button>
         </div>
 
         <div id="resultArea" class="result hidden">
@@ -155,6 +162,35 @@
       <p id="boardNote" class="hint center"></p>
     </section>
 
+    <!-- Bibliothek: alle jemals gespielten Songs -->
+    <section id="historyView" class="view hidden">
+      <div class="game-top">
+        <button id="historyBackBtn" class="link">← Menü</button>
+        <span>Bibliothek</span>
+        <span></span>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="hsSongs">0</b><small>verschiedene Songs</small></div>
+        <div class="stat"><b id="hsRate">0 %</b><small>erraten</small></div>
+        <div class="stat"><b id="hsFast">0</b><small>bei 0,1 s</small></div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-hview="songs">Songs</button>
+        <button class="tab" data-hview="log">Verlauf</button>
+      </div>
+      <div class="lib-tools">
+        <input id="libSearch" type="text" placeholder="In der Bibliothek suchen…" autocomplete="off">
+        <div class="chips">
+          <button class="chip on" data-hfilter="all">Alle</button>
+          <button class="chip" data-hfilter="won">Erraten</button>
+          <button class="chip" data-hfilter="lost">Nicht erraten</button>
+          <button class="chip" data-hfilter="skipped">Übersprungen</button>
+        </div>
+      </div>
+      <ol id="historyList" class="recap"></ol>
+      <p class="hint center">Die Bibliothek wird in diesem Browser gespeichert.</p>
+    </section>
+
     <!-- Diagnose -->
     <section id="diagView" class="view hidden">
       <div class="game-top">
@@ -176,9 +212,9 @@
   </div>
 
   <!-- Versionsnummer bei jedem Update erhöhen, damit Browser nicht alte Dateien benutzen -->
-  <script src="config.js?v=8"></script>
-  <script src="songs.js?v=8"></script>
-  <script src="app.js?v=8"></script>
+  <script src="config.js?v=10"></script>
+  <script src="songs.js?v=10"></script>
+  <script src="app.js?v=10"></script>
   <script src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>
