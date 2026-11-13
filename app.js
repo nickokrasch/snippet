@@ -18,7 +18,6 @@ const SCOPE_VERSION = "2";
 
 const STAGES = [0.1, 0.5, 1, 2, 4, 8, 16];            // Sekunden pro Versuch
 const POINTS = [150, 100, 80, 60, 40, 20, 10];       // Punkte je nach Versuch
-const SONGS_PER_GAME = 10;
 const MIN_SONGS = 5;
 const VOLUME = 0.8;
 
@@ -495,23 +494,8 @@ let playToken = 0;
 let busy = false;          // während wir selbst pausieren/springen
 let playing = null;        // null | "snippet" | "full"
 
-// Lädt den Song stumm in den Player, damit der erste Klick sofort spielt
-async function preloadTrack(track, startMs) {
-  const myToken = ++playToken;
-  busy = true;
-  try {
-    await player.setVolume(0);
-    await api(`/me/player/play?device_id=${deviceId}`, "PUT", { uris: [track.uri], position_ms: startMs });
-    await waitForState((s) => !s.paused && isCurrent(s, track));
-    await player.pause();
-    if (myToken !== playToken) return;
-    await player.seek(startMs);
-  } finally {
-    await player.setVolume(VOLUME);
-    busy = false;
-  }
-}
-
+// Spielt einen Abschnitt. Startet immer frisch an der gewünschten Stelle –
+// Zurückspulen im pausierten Song meldet Spotify nicht zuverlässig zurück.
 async function playSegment(track, startMs, seconds, onProgress) {
   const myToken = ++playToken;
   clearTimeout(stopTimer);
@@ -519,52 +503,56 @@ async function playSegment(track, startMs, seconds, onProgress) {
   busy = true;
   const tClick = performance.now();
   try {
-    const state = await player.getCurrentState();
-    const loaded = state && isCurrent(state, track);
-    if (loaded) {
-      await player.pause();
-      await player.seek(startMs);
-      await waitForState((s) => Math.abs(s.position - startMs) < 250, 3000);
-      await player.resume();
-    } else {
-      await api(`/me/player/play?device_id=${deviceId}`, "PUT", { uris: [track.uri], position_ms: startMs });
+    await api(`/me/player/play?device_id=${deviceId}`, "PUT", { uris: [track.uri], position_ms: startMs });
+    const s = await waitForState((s) => !s.paused && isCurrent(s, track) && s.position < startMs + 3000);
+    if (myToken !== playToken) {
+      if (!playing) player.pause(); // während des Ladens gestoppt
+      return false;
     }
-    const s = await waitForState((s) => !s.paused && isCurrent(s, track));
-    if (myToken !== playToken) return false;
 
     // "Läuft" heißt noch nicht "Ton ist da": warten, bis sich die Position wirklich bewegt
     let moving = null;
     const until = performance.now() + 2000;
     while (performance.now() < until) {
       const s2 = await player.getCurrentState();
-      if (myToken !== playToken) return false;
+      if (myToken !== playToken) {
+        if (!playing) player.pause();
+        return false;
+      }
       if (s2 && !s2.paused && s2.position > s.position + 15) { moving = s2; break; }
       await sleep(15);
     }
     const ref = moving || s;
     const playedMs = Math.max(0, ref.position - startMs);
     const t0 = performance.now() - Math.min(playedMs, 1000);
-    log(`Start (${loaded ? "vorgeladen" : "neu geladen"}): soll ${seconds === Infinity ? "ganzer Song" : seconds + " s"}, ` +
+    log(`Start: soll ${seconds === Infinity ? "ganzer Song" : seconds + " s"}, ` +
       `Verzögerung ${Math.round(performance.now() - tClick)} ms, ` +
       (moving ? `Ton läuft seit ${playedMs} ms` : "Position bewegt sich nicht (Schätzung)"));
-    const tick = () => {
-      if (myToken !== playToken) return;
-      const elapsed = (performance.now() - t0) / 1000;
-      onProgress?.(elapsed);
-      if (elapsed < seconds) rafId = requestAnimationFrame(tick);
-    };
-    tick();
 
-    if (seconds !== Infinity) {
-      const remaining = seconds * 1000 - (performance.now() - t0);
-      stopTimer = setTimeout(async () => {
-        if (myToken !== playToken) return;
-        stopPlayback();
-        await sleep(150);
-        const end = await player.getCurrentState();
-        if (end) log(`Gestoppt: soll ${seconds} s, laut Spotify gespielt ${((end.position - startMs) / 1000).toFixed(2)} s`);
-      }, Math.max(0, remaining));
-    }
+    // Fortschritt + Stopp: Position von Spotify und Uhr – was zuerst das Ende erreicht
+    const endPos = startMs + seconds * 1000;
+    (async () => {
+      while (myToken === playToken) {
+        const wall = performance.now() - t0;
+        onProgress?.(wall / 1000);
+        if (seconds !== Infinity) {
+          let pos = startMs + wall;
+          if (moving) {
+            const st = await player.getCurrentState();
+            if (myToken !== playToken) return;
+            if (st) pos = Math.max(pos, st.position);
+          }
+          if (pos >= endPos - 15) {
+            stopPlayback();
+            await sleep(200);
+            const end = await player.getCurrentState();
+            if (end) log(`Gestoppt: soll ${seconds} s, laut Spotify gespielt ${((end.position - startMs) / 1000).toFixed(2)} s`);
+            return;
+          }
+        }
+        await sleep(seconds === Infinity ? 100 : 8);
+      }
+    })();
     return true;
   } catch (e) {
     if (myToken === playToken) player.pause();
@@ -768,31 +756,20 @@ async function startGame() {
     if (!playerReady) throw new Error("Spotify-Player lädt noch – bitte gleich nochmal versuchen.");
     await playerReady;
 
-    const candidates = shuffle(filterTracks(baseList()));
-    let rounds;
-    if (state.mode === "mine") {
-      rounds = candidates.slice(0, SONGS_PER_GAME);
-      game.suggestPool = state.myTracks;
-    } else {
-      $("poolInfo").textContent = "Lade Songs…";
-      rounds = [];
-      for (let i = 0; i < candidates.length && rounds.length < SONGS_PER_GAME; i += 5) {
-        const res = await Promise.allSettled(candidates.slice(i, i + 5).map(resolveHit));
-        for (const r of res) if (r.status === "fulfilled" && r.value) rounds.push(r.value);
-      }
-      rounds = rounds.slice(0, SONGS_PER_GAME);
-      game.suggestPool = window.ALL_TIME_SONGS;
-      if (rounds.length < MIN_SONGS) throw new Error("Songs konnten bei Spotify nicht gefunden werden.");
-    }
-
     game.mode = state.mode;
-    game.rounds = rounds;
+    game.candidates = filterTracks(baseList());
+    game.queue = [];
+    game.suggestPool = state.mode === "mine" ? state.myTracks : window.ALL_TIME_SONGS;
     game.results = [];
     game.score = 0;
+    game.index = -1;
     game.filterLabel = filterLabel();
-    $("roundTotal").textContent = rounds.length;
+
+    $("poolInfo").textContent = "Lade Song…";
+    const first = await prepareNext();
+    game.next = prepareNext(); // nächsten Song schon im Hintergrund vorbereiten
     show("gameView");
-    startRound(0);
+    startRound(first);
   } catch (e) {
     $("hudStatus").textContent = e.message;
   } finally {
@@ -800,10 +777,27 @@ async function startGame() {
   }
 }
 
-function startRound(i) {
+// Endlos: alle passenden Songs gemischt nacheinander, danach neu gemischt
+function takeCandidate() {
+  if (!game.queue.length) game.queue = shuffle([...game.candidates]);
+  return game.queue.pop();
+}
+
+async function prepareNext() {
+  if (game.mode === "mine") return takeCandidate();
+  for (let tries = 0; tries < 8; tries++) {
+    const hit = takeCandidate();
+    const t = await resolveHit(hit).catch(() => null);
+    if (t) return t;
+    log(`All-Time-Hit nicht bei Spotify gefunden: ${hit.name} – ${hit.artists[0].name}`);
+  }
+  throw new Error("Songs konnten bei Spotify nicht gefunden werden.");
+}
+
+function startRound(track) {
   stopPlayback();
-  game.index = i;
-  game.current = game.rounds[i];
+  game.index++;
+  game.current = track;
   game.stage = 0;
   game.history = [];
   game.finished = false;
@@ -823,13 +817,9 @@ function startRound(i) {
   $("cover").parentElement.classList.remove("revealed");
   document.querySelector(".game-card").classList.remove("win");
   setStatus("");
+  setPlayButton("idle");
+  setRing(0);
   renderGame();
-
-  // Song im Hintergrund vorladen
-  setPlayButton("loading");
-  game.preload = preloadTrack(game.current, game.startMs)
-    .catch((e) => { log("Vorladen fehlgeschlagen: " + e.message); setStatus(e.message); })
-    .finally(() => { if (!playing) setPlayButton("idle"); });
 }
 
 function renderGame() {
@@ -886,7 +876,6 @@ async function playSnippet() {
   const seconds = STAGES[game.stage];
   setPlayButton("loading");
   try {
-    await game.preload;
     game.roundStartedAt ??= performance.now(); // Bedenkzeit läuft ab dem ersten Abspielen
     playing = "snippet";
     const ok = await playSegment(game.current, game.startMs, seconds, (t) => setRing(t / seconds));
@@ -923,8 +912,7 @@ function addAttempt(entry) {
   if (entry.type === "right") return finish(true);
   if (game.stage >= STAGES.length - 1) return finish(false);
   game.stage++;
-  renderGame();
-  playSnippet();
+  renderGame(); // nächster Ausschnitt erst auf Klick
 }
 
 function submitGuess() {
@@ -965,7 +953,6 @@ function finish(won) {
   rt.textContent = won ? `Richtig nach ${fmtSec(STAGES[game.stage])}s · +${pts} Punkte` : "Leider nicht erraten";
   $("resultTitle").textContent = t.name;
   $("resultArtist").textContent = t.artists.map((a) => a.name).join(", ");
-  $("nextBtn").textContent = game.index + 1 < game.rounds.length ? "Nächster Song" : "Ergebnis anzeigen";
 
   const cover = $("cover");
   cover.src = t.cover || "";
@@ -982,9 +969,25 @@ function finish(won) {
   playFull(); // Song direkt abspielen
 }
 
-function nextSong() {
-  if (game.index + 1 < game.rounds.length) startRound(game.index + 1);
-  else endGame();
+async function nextSong() {
+  const btn = $("nextBtn");
+  btn.disabled = true;
+  try {
+    const track = await game.next;
+    game.next = prepareNext();
+    startRound(track);
+  } catch (e) {
+    setStatus(e.message);
+    game.next = prepareNext();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// "Beenden": Ergebnis zeigen, wenn schon etwas gespielt wurde
+function quitGame() {
+  if (game.results.length) endGame();
+  else goHud();
 }
 
 // ---------- Feier-Animation (0,1 s) ----------
@@ -1103,7 +1106,7 @@ async function renderBoard(listEl, mode, highlightDate) {
     const b = document.createElement("b");
     b.textContent = e.name;
     const s = document.createElement("small");
-    s.textContent = `${e.filters} · ${new Date(e.date).toLocaleDateString("de-DE")}`;
+    s.textContent = `${e.songs ? e.songs + " Songs · " : ""}${e.filters} · ${new Date(e.date).toLocaleDateString("de-DE")}`;
     who.append(b, s);
     const pts = document.createElement("span");
     pts.className = "pts";
@@ -1119,7 +1122,7 @@ async function endGame() {
     name: state.me?.display_name || state.me?.id || "Spieler",
     score: game.score,
     filters: game.filterLabel,
-    songs: game.rounds.length,
+    songs: game.results.length,
     date: Date.now(),
   };
   const before = (await Board.list(game.mode).catch(() => [])).map(cleanEntry);
@@ -1127,9 +1130,10 @@ async function endGame() {
   await Board.add(game.mode, entry).catch(() => {});
 
   $("endScore").textContent = game.score;
-  const max = game.rounds.length * POINTS[0];
+  const n = game.results.length;
+  const right = game.results.filter((r) => r.won).length;
   $("endInfo").textContent = (game.score > myBest && before.length ? "Neuer persönlicher Rekord! · " : "") +
-    `${game.score} von ${max} möglichen Punkten · ${game.filterLabel}`;
+    `${right} von ${n} Songs erraten · ${game.filterLabel}`;
   show("endView");
   renderRecap();
   renderBoard($("endBoard"), game.mode, entry.date);
@@ -1271,7 +1275,7 @@ function bindEvents() {
     openBoard();
   }));
 
-  $("quitBtn").addEventListener("click", goHud);
+  $("quitBtn").addEventListener("click", quitGame);
   $("playBtn").addEventListener("click", onPlayClick);
   $("skipBtn").addEventListener("click", skip);
   $("submitBtn").addEventListener("click", submitGuess);
